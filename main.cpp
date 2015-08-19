@@ -11,6 +11,8 @@
 #include <vector>
 #include <iostream>
 #include <string>
+#include <unistd.h>
+#include <pthread.h>
 #include "Arduino.h"
 #include "SPI.h"
 #include "MFRC522.h"
@@ -246,17 +248,67 @@ int checkForCard(MFRC522 reader)
 
 hardwareSerial Serial;
 hardwareSPI SPI;
+pthread_mutex_t mutex1 = PTHREAD_MUTEX_INITIALIZER;
+int player1[5] = {0x00};
+
+void *thread1(void *dummyPtr)
+{
+	int value=0;
+	while (1) {
+		for (int i=0; i<5; i=i) {
+			value = checkForCard(mfrc522[i]);
+			if (value) {
+//				printf("found card: %i\n",value);
+				pthread_mutex_lock( &mutex1 );
+				player1[i] = value;
+				pthread_mutex_unlock( &mutex1 );
+				i++;
+			}
+		}
+		//		loop();
+	}
+	return NULL;
+}
+
+void *thread2(void *dummyPtr)
+{
+	while(1)
+	{
+		
+		pthread_mutex_lock( &mutex1 );
+		printf("\r");
+		printf("%i, %i, %i, %i, %i               ",player1[0],
+			   player1[1],
+			   player1[2],
+			   player1[3],
+			   player1[4]);
+		pthread_mutex_unlock( &mutex1 );
+		usleep(1000);
+	}
+	return NULL;
+}
 
 int main(int argc, char *argv[])
 {
 	int value;
 	setup();
-	while (1) {
-		value = checkForCard(mfrc522[0]);
-		if (value) {
-			printf("found card: %i\n",value);
-		}
-//		loop();
-	}
+	
+	pthread_t thread_id0, thread_id1;
+	
+	pthread_create( &thread_id0, NULL, thread1, NULL );
+	pthread_create( &thread_id1, NULL, thread2, NULL );
+	
+	pthread_join( thread_id0, NULL);
+	pthread_join( thread_id1, NULL);
+	
+	
+	
+//	while (1) {
+//		value = checkForCard(mfrc522[0]);
+//		if (value) {
+//			printf("found card: %i\n",value);
+//		}
+////		loop();
+//	}
 	return 0;
 }
