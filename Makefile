@@ -1,5 +1,6 @@
 # Roborally Makefile
 
+
 # Build tool
 CC = g++
 
@@ -24,7 +25,7 @@ OBJS = main.o $(WRAP_OBJS) $(RC_OBJS)
 
 # Compile and link main
 main : $(OBJS)
-	$(CC) -o main $(OBJS)
+	$(CC) -lpthread -o  main $(OBJS)
 
 # Target dependencies
 main.o : Arduino.h SPI.h MFRC522.h
