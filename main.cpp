@@ -12,6 +12,7 @@
 #include <iostream>
 #include <string>
 #include <unistd.h>
+#include <signal.h>
 #include <pthread.h>
 #include "Arduino.h"
 #include "SPI.h"
@@ -19,6 +20,8 @@
 
 #define RST_PIN         25
 #define SS_PIN          8
+#define P2_SS_PIN		24
+#define P2_RST_PIN		23 // multiple chips can probably have same reset pin, if one is not connected it will hang in the reset and 
 
 #define TLV_LOCK		0x01
 #define TLV_MEM			0x02
@@ -27,9 +30,11 @@
 
 #define UTF8			0x02
 
+#define MAX_PLAYERS		5
 
-std::vector<MFRC522> mfrc522(5, MFRC522(SS_PIN, RST_PIN) );   // Create MFRC522 instance.
 
+std::vector<MFRC522> mfrc522(5, MFRC522(SS_PIN, RST_PIN) );   // Create 5 MFRC522 instances.
+//std::vector<MFRC522> mfrc522;
 
 //void digitalWrite(int pin, ePinLevel level)
 //{
@@ -67,12 +72,17 @@ void createNdefTextMessage(byte *buffer, const char *payload, int pay_length)
 void setup(void)
 {
 	SPI.begin();        // Init SPI bus
-	mfrc522[0].PCD_Init(); // Init MFRC522 card
+	mfrc522.at(1) = MFRC522(P2_SS_PIN,P2_RST_PIN);
+//	mfrc522.push_back(MFRC522(SS_PIN, RST_PIN)); // add player 2
+	mfrc522.at(0).PCD_Init(); // Init MFRC522 card
+	mfrc522.at(1).PCD_Init(); // Init MFRC522 card
+//	mfrc522.at(2).PCD_Init(); // Init MFRC522 card
 	
 	Serial.println(F("Scanning for new messages\n\n"));
+	printf("Player 1:\t\t\tPlayer 2:\n");
 }
 
-
+// Loop that allows for rewriting the NDEF message on the PICC
 void loop() {
 	// Look for new cards
 	if ( ! mfrc522[0].PICC_IsNewCardPresent())
@@ -218,18 +228,18 @@ int checkForCard(MFRC522 reader)
 	byte buffer[size];	// Ultralight always returns 16 bytes + 2byte CRC
 	
 	// Look for new cards
-	if ( ! mfrc522[0].PICC_IsNewCardPresent())
+	if ( ! reader.PICC_IsNewCardPresent())
 		return 0;
 	
 	// Select one of the cards
-	if ( ! mfrc522[0].PICC_ReadCardSerial())
+	if ( ! reader.PICC_ReadCardSerial())
 		return 0;
 	
 	// Read data from the block
-	status = mfrc522[0].MIFARE_Read(blockAddr, buffer, &size);
+	status = reader.MIFARE_Read(blockAddr, buffer, &size);
 	if (status != MFRC522::STATUS_OK) {
 		Serial.print(F("MIFARE_Read() failed: "));
-		Serial.println(mfrc522[0].GetStatusCodeName(status));
+		Serial.println(reader.GetStatusCodeName(status));
 		return 0;
 	}
 	
@@ -241,28 +251,41 @@ int checkForCard(MFRC522 reader)
 	}
 	
 	// Halt PICC
-	mfrc522[0].PICC_HaltA();
+	reader.PICC_HaltA();
 	
 	return value;
 }
 
 hardwareSerial Serial;
 hardwareSPI SPI;
-pthread_mutex_t mutex1 = PTHREAD_MUTEX_INITIALIZER;
-int player1[5] = {0x00};
+pthread_mutex_t mutexPlayer[5] = {PTHREAD_MUTEX_INITIALIZER};
+int playerCards[MAX_PLAYERS][5] = {{0x00}};
 
-void *thread1(void *dummyPtr)
+
+
+void *monitorCardThread(void *nrOfPlayers)
 {
+	int nrPlayers = (int)nrOfPlayers;
+	int local_players[MAX_PLAYERS][5] = {{0x00}};
+	int index[MAX_PLAYERS] = {0x00};
 	int value=0;
+
 	while (1) {
-		for (int i=0; i<5; i=i) {
-			value = checkForCard(mfrc522[i]);
-			if (value) {
-//				printf("found card: %i\n",value);
-				pthread_mutex_lock( &mutex1 );
-				player1[i] = value;
-				pthread_mutex_unlock( &mutex1 );
-				i++;
+//		printf("ID: %i",ID);
+		for (int player=0; player<nrPlayers; player++)
+		{
+			value = checkForCard(mfrc522.at(player));
+			if ( (value != 0) && (value != local_players[player][ index[player] ]) )
+			{
+				pthread_mutex_lock( &mutexPlayer[player] );
+				playerCards[player][ index[player] ] = value;
+				pthread_mutex_unlock( &mutexPlayer[player] );
+				local_players[player][ index[player] ] = value;
+				index[player]++;
+				if (index[player] >= 5)
+				{
+					index[player] = 0;
+				}
 			}
 		}
 		//		loop();
@@ -270,19 +293,29 @@ void *thread1(void *dummyPtr)
 	return NULL;
 }
 
-void *thread2(void *dummyPtr)
+void *printValuesThread(void *dummyPtr)
 {
 	while(1)
 	{
+		pthread_mutex_lock( &mutexPlayer[0] );
 		
-		pthread_mutex_lock( &mutex1 );
 		printf("\r");
-		printf("%i, %i, %i, %i, %i               ",player1[0],
-			   player1[1],
-			   player1[2],
-			   player1[3],
-			   player1[4]);
-		pthread_mutex_unlock( &mutex1 );
+		printf("%i, %i, %i, %i, %i              ",
+			   playerCards[0][0],
+			   playerCards[0][1],
+			   playerCards[0][2],
+			   playerCards[0][3],
+			   playerCards[0][4]);
+		pthread_mutex_unlock( &mutexPlayer[0] );
+
+		pthread_mutex_lock( &mutexPlayer[1] );
+		printf("%i, %i, %i, %i, %i              ",
+			   playerCards[1][0],
+			   playerCards[1][1],
+			   playerCards[1][2],
+			   playerCards[1][3],
+			   playerCards[1][4]);
+		pthread_mutex_unlock( &mutexPlayer[1] );
 		usleep(1000);
 	}
 	return NULL;
@@ -290,25 +323,29 @@ void *thread2(void *dummyPtr)
 
 int main(int argc, char *argv[])
 {
+	int numberOfPlayers = 2;
 	int value;
 	setup();
 	
-	pthread_t thread_id0, thread_id1;
+	pthread_mutex_init(&mutexPlayer[0], NULL);
+	pthread_mutex_init(&mutexPlayer[1], NULL);
 	
-	pthread_create( &thread_id0, NULL, thread1, NULL );
-	pthread_create( &thread_id1, NULL, thread2, NULL );
+	pthread_t thread_id0, thread_id1, thread_id2;
+	
+	pthread_create( &thread_id0, NULL, monitorCardThread, (void *)numberOfPlayers );
+	pthread_create( &thread_id2, NULL, printValuesThread, NULL );
 	
 	pthread_join( thread_id0, NULL);
-	pthread_join( thread_id1, NULL);
+	pthread_join( thread_id2, NULL);
 	
-	
+	printf("Proper Stop\n");
 	
 //	while (1) {
-//		value = checkForCard(mfrc522[0]);
-//		if (value) {
-//			printf("found card: %i\n",value);
-//		}
-////		loop();
+////		value = checkForCard(mfrc522[0]);
+////		if (value) {
+////			printf("found card: %i\n",value);
+////		}
+//		loop();
 //	}
 	return 0;
 }
