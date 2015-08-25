@@ -21,7 +21,6 @@
 #define RST_PIN         25
 #define SS_PIN          8
 #define P2_SS_PIN		24
-#define P2_RST_PIN		23 // multiple chips can probably have same reset pin, if one is not connected it will hang in the reset and 
 
 #define TLV_LOCK		0x01
 #define TLV_MEM			0x02
@@ -30,11 +29,82 @@
 
 #define UTF8			0x02
 
-#define MAX_PLAYERS		5
+#define MAX_PLAYERS		4
+
+#define MCP_IODIRA		0x00
+#define MCP_IODIRB		0x01
+#define MCP_IPOLA		0x02
+#define MCP_IPOLB		0x03
+#define MCP_GPINTENA	0x04
+#define MCP_GPINTENB	0x05
+#define MCP_DEFVALA		0x06
+#define MCP_DEFVALB		0x07
+#define MCP_INTCONA		0x08
+#define MCP_INTCONB		0x09
+#define MCP_IOCON		0x0A // IOCON is doubled to 0x0B so can be skipped
+#define MCP_GPPUA		0x0C
+#define MCP_GPUB		0x0D
+#define MCP_INTFA		0x0E
+#define MCP_INTFB		0x0F
+#define MCP_INTCAPA		0x10
+#define MCP_INTCAPB		0x11
+#define MCP_GPIOA		0x12
+#define MCP_GPIOB		0x13
+#define MCP_OLATA		0x14
+#define MCP_OLATB		0x15
+
+#define MCP_ADDR		0x40
+#define MCP_SS			8
+#define MCP_RST			25
 
 
-std::vector<MFRC522> mfrc522(5, MFRC522(SS_PIN, RST_PIN) );   // Create 5 MFRC522 instances.
+std::vector<MFRC522> mfrc522(MAX_PLAYERS, MFRC522(SS_PIN, RST_PIN) );   // Create 5 MFRC522 instances.
 //std::vector<MFRC522> mfrc522;
+
+void mcpWrite(int value)
+{
+	byte data[10];
+	byte ret[10];
+	// Make all pins HIGH
+	digitalWrite(MCP_SS, LOW);
+	data[0] = MCP_ADDR;
+	data[1] = MCP_GPIOA;
+	data[2] = value & 0x00FF;
+	data[3] = (value >> 8) & 0x00FF;
+	SPI.transferArray(data, ret, 4);
+	digitalWrite(MCP_SS, HIGH);
+	
+}
+
+void initMCP(void)
+{
+	byte data[10];
+	byte ret[10];
+	
+	pinMode(MCP_SS, OUTPUT);
+	pinMode(MCP_RST, OUTPUT);
+	digitalWrite(MCP_RST, HIGH);
+	digitalWrite(MCP_SS, HIGH);
+	
+	// Set IOCON
+	digitalWrite(MCP_SS, LOW);
+	data[0] = MCP_ADDR;
+	data[1] = MCP_IOCON;
+	data[2] = 0x00;
+	SPI.transferArray(data, ret, 3);
+	digitalWrite(MCP_SS, HIGH);
+	
+	// Make all pins outputs
+	digitalWrite(MCP_SS, LOW);
+	data[0] = MCP_ADDR;
+	data[1] = MCP_IODIRA;
+	data[2] = 0x00;
+	data[3] = 0x00;
+	SPI.transferArray(data, ret, 4);
+	digitalWrite(MCP_SS, HIGH);
+}
+
+
 
 //void digitalWrite(int pin, ePinLevel level)
 //{
@@ -72,11 +142,10 @@ void createNdefTextMessage(byte *buffer, const char *payload, int pay_length)
 void setup(void)
 {
 	SPI.begin();        // Init SPI bus
-	mfrc522.at(1) = MFRC522(P2_SS_PIN,P2_RST_PIN);
-//	mfrc522.push_back(MFRC522(SS_PIN, RST_PIN)); // add player 2
+	mfrc522.at(1) = MFRC522(P2_SS_PIN,RST_PIN); // change CS and RST pin for card
+	
 	mfrc522.at(0).PCD_Init(); // Init MFRC522 card
 	mfrc522.at(1).PCD_Init(); // Init MFRC522 card
-//	mfrc522.at(2).PCD_Init(); // Init MFRC522 card
 	
 	Serial.println(F("Scanning for new messages\n\n"));
 	printf("Player 1:\t\t\tPlayer 2:\n");
@@ -270,8 +339,8 @@ void *monitorCardThread(void *nrOfPlayers)
 	int index[MAX_PLAYERS] = {0x00};
 	int value=0;
 
-	while (1) {
-//		printf("ID: %i",ID);
+	while (1)
+	{
 		for (int player=0; player<nrPlayers; player++)
 		{
 			value = checkForCard(mfrc522.at(player));
@@ -288,7 +357,6 @@ void *monitorCardThread(void *nrOfPlayers)
 				}
 			}
 		}
-		//		loop();
 	}
 	return NULL;
 }
@@ -325,6 +393,7 @@ int main(int argc, char *argv[])
 {
 	int numberOfPlayers = 2;
 	int value;
+	
 	setup();
 	
 	pthread_mutex_init(&mutexPlayer[0], NULL);
@@ -338,7 +407,10 @@ int main(int argc, char *argv[])
 	pthread_join( thread_id0, NULL);
 	pthread_join( thread_id2, NULL);
 	
-	printf("Proper Stop\n");
+	printf("Proper Stop\n"); // Not sure how to reach this because ctl+c terminates the program..
+	
+	SPI.begin();
+	initMCP();
 	
 //	while (1) {
 ////		value = checkForCard(mfrc522[0]);
