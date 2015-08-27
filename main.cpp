@@ -294,6 +294,7 @@ void loop() {
 
 	// Halt PICC
 	mfrc522[0].PICC_HaltA();
+	printf("\nPresent next card.\n");
 }
 
 byte *decodeNDEF(byte *buffer, int buffer_size)
@@ -351,8 +352,10 @@ int checkForCard(MFRC522 reader)
 
 hardwareSerial Serial;
 hardwareSPI SPI;
-pthread_mutex_t mutexPlayer[MAX_PLAYERS] = {PTHREAD_MUTEX_INITIALIZER};
+pthread_mutex_t mutexPlayer = PTHREAD_MUTEX_INITIALIZER;
 int playerCards[MAX_PLAYERS][5] = {{0x00}};
+pthread_mutex_t mutexChange = PTHREAD_MUTEX_INITIALIZER;
+int changed = 1;
 pthread_mutex_t mutexTime = PTHREAD_MUTEX_INITIALIZER;
 double checkTime;
 
@@ -377,9 +380,10 @@ void *monitorCardThread(void *nrOfPlayers)
 			value = checkForCard(mfrc522.at(player));
 			if ( (value != 0) && (value != local_players[player][ index[player] ]) )
 			{
-				pthread_mutex_lock( &mutexPlayer[player] );
+				pthread_mutex_lock( &mutexPlayer );
 				playerCards[player][ index[player] ] = value;
-				pthread_mutex_unlock( &mutexPlayer[player] );
+				changed = 1;
+				pthread_mutex_unlock( &mutexPlayer );
 				local_players[player][ index[player] ] = value;
 				
 				index[player]++;
@@ -408,22 +412,30 @@ void *printValuesThread(void *nrOfPlayers)
 	int nrPlayers = (int)nrOfPlayers;
 	while(1)
 	{
-		printf("\e[1;1H\e[2J");
-		for (int player=0; player< nrPlayers; player++) {
-			pthread_mutex_lock( &mutexPlayer[player] );
+		pthread_mutex_lock( &mutexChange);
+		if (changed)
+		{
+			printf("\e[1;1H\e[2J");
+			pthread_mutex_lock( &mutexPlayer );
+			for (int player=0; player< nrPlayers; player++)
+			{
+				printf("player %i:\t%.3i, %.3i, %.3i, %.3i, %.3i              \n",
+					   player,
+					   playerCards[player][0],
+					   playerCards[player][1],
+					   playerCards[player][2],
+					   playerCards[player][3],
+					   playerCards[player][4]);
+			}
+			pthread_mutex_unlock( &mutexPlayer );
 			
-			printf("player %i:\t%.3i, %.3i, %.3i, %.3i, %.3i              \n",
-				   player,
-				   playerCards[player][0],
-				   playerCards[player][1],
-				   playerCards[player][2],
-				   playerCards[player][3],
-				   playerCards[player][4]);
-			pthread_mutex_unlock( &mutexPlayer[player] );
+			pthread_mutex_lock( &mutexTime);
+			printf("Last get time: %.2fms\n",checkTime);
+			pthread_mutex_unlock( &mutexTime);
 		}
-		pthread_mutex_lock( &mutexTime);
-		printf("Last get time: %.2fms\n",checkTime);
-		pthread_mutex_unlock( &mutexTime);
+		changed = 0;
+		pthread_mutex_unlock( &mutexChange);
+		
 		usleep(5000);
 	}
 	return NULL;
@@ -440,6 +452,7 @@ int main(int argc, char *argv[])
 	
 	if (overwrite)
 	{
+		printf("Present card.\n");
 			while (1) {
 		//		value = checkForCard(mfrc522[0]);
 		//		if (value) {
@@ -448,8 +461,6 @@ int main(int argc, char *argv[])
 				loop();
 			}
 	}
-	pthread_mutex_init(&mutexPlayer[0], NULL);
-	pthread_mutex_init(&mutexPlayer[1], NULL);
 	
 	pthread_t thread_id0, thread_id1;
 	
