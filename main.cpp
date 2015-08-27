@@ -14,14 +14,16 @@
 #include <unistd.h>
 #include <signal.h>
 #include <pthread.h>
+#include <sys/time.h>
+#include <getopt.h>
 #include "Arduino.h"
 #include "SPI.h"
 #include "MFRC522.h"
 
-#define RST_PIN         25
-#define SS_PIN          8
+#define RST_PIN         4 // reset pins are connected to VDD directly but MCP lib still needs a RST pin
+#define P1_SS_PIN       8
 #define P2_SS_PIN		24
-#define P2_RST_PIN		23 // multiple chips can probably have same reset pin, if one is not connected it will hang in the reset and 
+#define P3_SS_PIN		23
 
 #define TLV_LOCK		0x01
 #define TLV_MEM			0x02
@@ -30,11 +32,104 @@
 
 #define UTF8			0x02
 
-#define MAX_PLAYERS		5
+#define MAX_PLAYERS		4
+
+#define SHIFT_SER		8
+#define SHIFT_OE		25
+#define SHIFT_CLK		24
+#define SHIFT_CLR		23
 
 
-std::vector<MFRC522> mfrc522(5, MFRC522(SS_PIN, RST_PIN) );   // Create 5 MFRC522 instances.
-//std::vector<MFRC522> mfrc522;
+//std::vector<MFRC522> mfrc522(MAX_PLAYERS*5, MFRC522(SS_PIN, RST_PIN) );   // Create 5 MFRC522 instances.
+std::vector<MFRC522> mfrc522;
+
+int overwrite = 0;
+
+static void help(void) __attribute__ ((noreturn));
+// Print help
+static void help(void)
+{
+	printf("Usage: main  [-h] [-o] \n"
+		   "Read Roborally play card or overwrite their value\n"
+		   "	-o,	--overwrite		overwrite value on card\n");
+	exit(1);
+}
+
+static int parse_args(int argc, char **argv)
+{
+	int option_index = 0;
+	int c = 0;
+	
+	static struct option long_options[] = {
+		{"help",		no_argument,		0, 'h'},
+		{"overwrite",	no_argument,		0, 'o'},
+		{0, 0, 0, 0}
+	};
+	
+	while ((c = getopt_long(argc, argv, "ho", long_options, &option_index)) != -1)
+	{
+		switch (c)
+		{
+			case 'h':
+				help();
+				break;
+				
+			case 'o':
+				overwrite = 1;
+				break;
+				
+			case '?':
+				help();
+				break;
+				
+			default:
+				abort();
+		}
+	}
+	
+	return 0;
+}
+
+void initShift(void)
+{
+	pinMode(SHIFT_SER, OUTPUT);
+	pinMode(SHIFT_OE, OUTPUT);
+	pinMode(SHIFT_CLK, OUTPUT);
+	pinMode(SHIFT_CLR, OUTPUT);
+	
+	_digitalWrite(SHIFT_SER, LOW);
+	_digitalWrite(SHIFT_CLK, LOW);
+	_digitalWrite(SHIFT_OE, HIGH);
+	_digitalWrite(SHIFT_CLR, HIGH);
+}
+
+void shiftWrite(int value)
+{
+	_digitalWrite(SHIFT_OE, 1);
+	_digitalWrite(SHIFT_CLR, 0);
+	usleep(5);
+	_digitalWrite(SHIFT_CLR, 1);
+	for (int i=16; i>0; i--)
+	{
+		//
+		_digitalWrite(SHIFT_SER, (value >> i) & 0x01);
+		usleep(5);
+		_digitalWrite(SHIFT_CLK, 1);
+		usleep(5);
+		_digitalWrite(SHIFT_CLK, 0);
+		usleep(5);
+	}
+	// add one clock pulse for transition from shift register to storage register
+	// clocked data for this last pulse is 1 so no chips get selected by accident
+	_digitalWrite(SHIFT_SER, 1);
+	usleep(5);
+	_digitalWrite(SHIFT_CLK, 1);
+	usleep(5);
+	_digitalWrite(SHIFT_CLK, 0);
+	usleep(5);
+	_digitalWrite(SHIFT_OE, 0);
+}
+
 
 //void digitalWrite(int pin, ePinLevel level)
 //{
@@ -49,8 +144,7 @@ void dump_byte_array(byte *buffer, byte bufferSize) {
 }
 
 
-
-// buffer needs to me at least pay_length + 11 (this includes \0 at the end)
+// buffer needs to be at least pay_length + 11 (this includes \0 at the end)
 // adds the TLV_LOCK message so can only be used once.
 void createNdefTextMessage(byte *buffer, const char *payload, int pay_length)
 {
@@ -72,14 +166,13 @@ void createNdefTextMessage(byte *buffer, const char *payload, int pay_length)
 void setup(void)
 {
 	SPI.begin();        // Init SPI bus
-	mfrc522.at(1) = MFRC522(P2_SS_PIN,P2_RST_PIN);
-//	mfrc522.push_back(MFRC522(SS_PIN, RST_PIN)); // add player 2
+	mfrc522.push_back(MFRC522(P1_SS_PIN,RST_PIN));
+	mfrc522.push_back(MFRC522(P2_SS_PIN,RST_PIN));
+	mfrc522.push_back(MFRC522(P3_SS_PIN,RST_PIN));
+	
 	mfrc522.at(0).PCD_Init(); // Init MFRC522 card
 	mfrc522.at(1).PCD_Init(); // Init MFRC522 card
-//	mfrc522.at(2).PCD_Init(); // Init MFRC522 card
-	
-	Serial.println(F("Scanning for new messages\n\n"));
-	printf("Player 1:\t\t\tPlayer 2:\n");
+	mfrc522.at(2).PCD_Init(); // Init MFRC522 card
 }
 
 // Loop that allows for rewriting the NDEF message on the PICC
@@ -201,6 +294,7 @@ void loop() {
 
 	// Halt PICC
 	mfrc522[0].PICC_HaltA();
+	printf("\nPresent next card.\n");
 }
 
 byte *decodeNDEF(byte *buffer, int buffer_size)
@@ -258,9 +352,12 @@ int checkForCard(MFRC522 reader)
 
 hardwareSerial Serial;
 hardwareSPI SPI;
-pthread_mutex_t mutexPlayer[5] = {PTHREAD_MUTEX_INITIALIZER};
+pthread_mutex_t mutexPlayer = PTHREAD_MUTEX_INITIALIZER;
 int playerCards[MAX_PLAYERS][5] = {{0x00}};
-
+pthread_mutex_t mutexChange = PTHREAD_MUTEX_INITIALIZER;
+int changed = 1;
+pthread_mutex_t mutexTime = PTHREAD_MUTEX_INITIALIZER;
+double checkTime;
 
 
 void *monitorCardThread(void *nrOfPlayers)
@@ -270,82 +367,112 @@ void *monitorCardThread(void *nrOfPlayers)
 	int index[MAX_PLAYERS] = {0x00};
 	int value=0;
 
-	while (1) {
-//		printf("ID: %i",ID);
+	while (1)
+	{
 		for (int player=0; player<nrPlayers; player++)
 		{
+			struct timeval t1, t2;
+			double elapsedTime;
+			
+			// start timer
+			gettimeofday(&t1, NULL);
+			
 			value = checkForCard(mfrc522.at(player));
 			if ( (value != 0) && (value != local_players[player][ index[player] ]) )
 			{
-				pthread_mutex_lock( &mutexPlayer[player] );
+				pthread_mutex_lock( &mutexPlayer );
 				playerCards[player][ index[player] ] = value;
-				pthread_mutex_unlock( &mutexPlayer[player] );
+				changed = 1;
+				pthread_mutex_unlock( &mutexPlayer );
 				local_players[player][ index[player] ] = value;
+				
 				index[player]++;
 				if (index[player] >= 5)
 				{
 					index[player] = 0;
 				}
+				
+				// get stop time
+				gettimeofday(&t2, NULL);
+				
+				// compute the elapsed time in millisec
+				elapsedTime = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
+				elapsedTime += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
+				pthread_mutex_lock( &mutexTime);
+				checkTime = elapsedTime;
+				pthread_mutex_unlock( &mutexTime);
 			}
 		}
-		//		loop();
 	}
 	return NULL;
 }
 
-void *printValuesThread(void *dummyPtr)
+void *printValuesThread(void *nrOfPlayers)
 {
+	int nrPlayers = (int)nrOfPlayers;
 	while(1)
 	{
-		pthread_mutex_lock( &mutexPlayer[0] );
+		pthread_mutex_lock( &mutexChange);
+		if (changed)
+		{
+			printf("\e[1;1H\e[2J");
+			pthread_mutex_lock( &mutexPlayer );
+			for (int player=0; player< nrPlayers; player++)
+			{
+				printf("player %i:\t%.3i, %.3i, %.3i, %.3i, %.3i              \n",
+					   player,
+					   playerCards[player][0],
+					   playerCards[player][1],
+					   playerCards[player][2],
+					   playerCards[player][3],
+					   playerCards[player][4]);
+			}
+			pthread_mutex_unlock( &mutexPlayer );
+			
+			pthread_mutex_lock( &mutexTime);
+			printf("Last get time: %.2fms\n",checkTime);
+			pthread_mutex_unlock( &mutexTime);
+		}
+		changed = 0;
+		pthread_mutex_unlock( &mutexChange);
 		
-		printf("\r");
-		printf("%i, %i, %i, %i, %i              ",
-			   playerCards[0][0],
-			   playerCards[0][1],
-			   playerCards[0][2],
-			   playerCards[0][3],
-			   playerCards[0][4]);
-		pthread_mutex_unlock( &mutexPlayer[0] );
-
-		pthread_mutex_lock( &mutexPlayer[1] );
-		printf("%i, %i, %i, %i, %i              ",
-			   playerCards[1][0],
-			   playerCards[1][1],
-			   playerCards[1][2],
-			   playerCards[1][3],
-			   playerCards[1][4]);
-		pthread_mutex_unlock( &mutexPlayer[1] );
-		usleep(1000);
+		usleep(5000);
 	}
 	return NULL;
 }
 
 int main(int argc, char *argv[])
 {
-	int numberOfPlayers = 2;
+	int numberOfPlayers = 3;
 	int value;
+	
+	parse_args(argc, argv);
+	
 	setup();
 	
-	pthread_mutex_init(&mutexPlayer[0], NULL);
-	pthread_mutex_init(&mutexPlayer[1], NULL);
+	if (overwrite)
+	{
+		printf("Present card.\n");
+			while (1) {
+		//		value = checkForCard(mfrc522[0]);
+		//		if (value) {
+		//			printf("found card: %i\n",value);
+		//		}
+				loop();
+			}
+	}
 	
-	pthread_t thread_id0, thread_id1, thread_id2;
+	pthread_t thread_id0, thread_id1;
 	
 	pthread_create( &thread_id0, NULL, monitorCardThread, (void *)numberOfPlayers );
-	pthread_create( &thread_id2, NULL, printValuesThread, NULL );
+	pthread_create( &thread_id1, NULL, printValuesThread, (void *)numberOfPlayers );
 	
 	pthread_join( thread_id0, NULL);
-	pthread_join( thread_id2, NULL);
+	pthread_join( thread_id1, NULL);
 	
-	printf("Proper Stop\n");
+	printf("Proper Stop\n"); // Not sure how to reach this because ctl+c terminates the program..
+
 	
-//	while (1) {
-////		value = checkForCard(mfrc522[0]);
-////		if (value) {
-////			printf("found card: %i\n",value);
-////		}
-//		loop();
-//	}
+
 	return 0;
 }
