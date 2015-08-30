@@ -34,16 +34,17 @@
 
 #define MAX_PLAYERS		4
 
-#define SHIFT_SER		8
-#define SHIFT_OE		25
-#define SHIFT_CLK		24
-#define SHIFT_CLR		23
+#define SHIFT_SER		4
+#define SHIFT_OE		17
+#define SHIFT_CLK		3
+#define SHIFT_RCLK		27
+#define SHIFT_CLR		22
 
 
 //std::vector<MFRC522> mfrc522(MAX_PLAYERS*5, MFRC522(SS_PIN, RST_PIN) );   // Create 5 MFRC522 instances.
 std::vector<MFRC522> mfrc522;
 
-int overwrite = 0;
+int overwrite = 0; // input arg flag to overwrite cards
 
 static void help(void) __attribute__ ((noreturn));
 // Print help
@@ -95,11 +96,13 @@ void initShift(void)
 	pinMode(SHIFT_SER, OUTPUT);
 	pinMode(SHIFT_OE, OUTPUT);
 	pinMode(SHIFT_CLK, OUTPUT);
+	pinMode(SHIFT_RCLK, OUTPUT);
 	pinMode(SHIFT_CLR, OUTPUT);
 	
 	_digitalWrite(SHIFT_SER, LOW);
 	_digitalWrite(SHIFT_CLK, LOW);
-	_digitalWrite(SHIFT_OE, HIGH);
+	_digitalWrite(SHIFT_RCLK, HIGH);
+	_digitalWrite(SHIFT_OE, LOW);
 	_digitalWrite(SHIFT_CLR, HIGH);
 }
 
@@ -109,24 +112,19 @@ void shiftWrite(int value)
 	_digitalWrite(SHIFT_CLR, 0);
 	usleep(5);
 	_digitalWrite(SHIFT_CLR, 1);
-	for (int i=16; i>0; i--)
+	_digitalWrite(SHIFT_CLK, 0);
+	_digitalWrite(SHIFT_RCLK, 1);
+	for (int i=0; i<16; i++)
 	{
-		//
 		_digitalWrite(SHIFT_SER, (value >> i) & 0x01);
 		usleep(5);
 		_digitalWrite(SHIFT_CLK, 1);
+		_digitalWrite(SHIFT_RCLK, 0);
 		usleep(5);
 		_digitalWrite(SHIFT_CLK, 0);
+		_digitalWrite(SHIFT_RCLK, 1);
 		usleep(5);
 	}
-	// add one clock pulse for transition from shift register to storage register
-	// clocked data for this last pulse is 1 so no chips get selected by accident
-	_digitalWrite(SHIFT_SER, 1);
-	usleep(5);
-	_digitalWrite(SHIFT_CLK, 1);
-	usleep(5);
-	_digitalWrite(SHIFT_CLK, 0);
-	usleep(5);
 	_digitalWrite(SHIFT_OE, 0);
 }
 
@@ -445,6 +443,10 @@ int main(int argc, char *argv[])
 {
 	int numberOfPlayers = 3;
 	int value;
+	
+//	initShift();
+//	shiftWrite(atoi(argv[1]));
+//	return 1;
 	
 	parse_args(argc, argv);
 	
