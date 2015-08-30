@@ -24,8 +24,8 @@ RC_OBJS = MFRC522.o
 OBJS = main.o $(WRAP_OBJS) $(RC_OBJS)
 
 # Compile and link main
-main : $(OBJS)
-	$(CC) -lpthread -o  main $(OBJS)
+roborally : $(OBJS)
+	$(CC) -lpthread -o  roborally $(OBJS)
 
 # Target dependencies
 main.o : Arduino.h SPI.h MFRC522.h
