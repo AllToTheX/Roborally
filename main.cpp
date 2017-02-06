@@ -376,19 +376,23 @@ void *monitorCardThread(void *nrOfPlayers)
 			gettimeofday(&t1, NULL);
 			
 			value = checkForCard(mfrc522.at(player));
-			if ( (value != 0) && (value != local_players[player][ index[player] ]) )
+			if ( (value != 0) && (value != local_players[player][ index[player] ]) ) // New card
 			{
-				pthread_mutex_lock( &mutexPlayer );
-				playerCards[player][ index[player] ] = value;
-				changed = 1;
-				pthread_mutex_unlock( &mutexPlayer );
-				local_players[player][ index[player] ] = value;
-				
 				index[player]++;
 				if (index[player] >= 5)
 				{
 					index[player] = 0;
 				}
+				
+				pthread_mutex_lock( &mutexPlayer );
+				playerCards[player][ index[player] ] = value;
+				pthread_mutex_unlock( &mutexPlayer );
+				
+				pthread_mutex_lock( &mutexChange);
+				changed = 1;
+				pthread_mutex_unlock( &mutexChange);
+				
+				local_players[player][ index[player] ] = value;
 				
 				// get stop time
 				gettimeofday(&t2, NULL);
@@ -413,9 +417,12 @@ void *printValuesThread(void *nrOfPlayers)
 		pthread_mutex_lock( &mutexChange);
 		if (changed)
 		{
+			changed = 0;
+			pthread_mutex_unlock( &mutexChange);
+			
 			printf("\e[1;1H\e[2J");
 			pthread_mutex_lock( &mutexPlayer );
-			for (int player=0; player< nrPlayers; player++)
+			for (int player=0; player < nrPlayers; player++)
 			{
 				printf("player %i:\t%.3i, %.3i, %.3i, %.3i, %.3i              \n",
 					   player,
@@ -430,9 +437,10 @@ void *printValuesThread(void *nrOfPlayers)
 			pthread_mutex_lock( &mutexTime);
 			printf("Last get time: %.2fms\n",checkTime);
 			pthread_mutex_unlock( &mutexTime);
+			
+		}else{
+			pthread_mutex_unlock( &mutexChange);
 		}
-		changed = 0;
-		pthread_mutex_unlock( &mutexChange);
 		
 		usleep(5000);
 	}
